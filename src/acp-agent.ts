@@ -548,6 +548,12 @@ export class ClaudeAcpAgent implements Agent {
         };
       }
 
+      const toolInfo = toolInfoFromToolUse(
+        { name: toolName, input: toolInput },
+        this.fileContentCache,
+        this.logger,
+      );
+
       const response = await this.client.requestPermission({
         options: [
           {
@@ -562,11 +568,10 @@ export class ClaudeAcpAgent implements Agent {
         toolCall: {
           toolCallId: toolUseID,
           rawInput: toolInput,
-          title: toolInfoFromToolUse(
-            { name: toolName, input: toolInput },
-            this.fileContentCache,
-            this.logger,
-          ).title,
+          title: toolInfo.title,
+          kind: toolInfo.kind,
+          content: toolInfo.content,
+          locations: toolInfo.locations,
         },
       });
       if (signal.aborted || response.outcome?.outcome === "cancelled") {
