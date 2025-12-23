@@ -740,8 +740,8 @@ export class ClaudeAcpAgent implements Agent {
         disallowedTools.push("Write", "Edit");
       }
       if (this.clientCapabilities?.terminal) {
-        allowedTools.push(acpToolNames.bashOutput, acpToolNames.killShell);
-        disallowedTools.push("Bash", "BashOutput", "KillShell");
+        allowedTools.push(acpToolNames.bashOutput, acpToolNames.killShell, acpToolNames.grep);
+        disallowedTools.push("Bash", "BashOutput", "KillShell", "Grep");
       }
     } else {
       // When built-in tools are disabled, explicitly disallow all of them
@@ -752,6 +752,7 @@ export class ClaudeAcpAgent implements Agent {
         acpToolNames.bash,
         acpToolNames.bashOutput,
         acpToolNames.killShell,
+        acpToolNames.grep,
         "Read",
         "Write",
         "Edit",

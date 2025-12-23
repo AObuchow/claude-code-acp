@@ -35,7 +35,24 @@ const unqualifiedToolNames = {
   bash: "Bash",
   killShell: "KillShell",
   bashOutput: "BashOutput",
+  grep: "Grep",
 };
+
+interface GrepInput {
+  pattern: string;
+  path?: string;
+  glob?: string;
+  type?: string;
+  output_mode?: "content" | "files_with_matches" | "count";
+  "-i"?: boolean;
+  "-n"?: boolean;
+  "-A"?: number;
+  "-B"?: number;
+  "-C"?: number;
+  multiline?: boolean;
+  head_limit?: number;
+  offset?: number;
+}
 
 export function createMcpServer(
   agent: ClaudeAcpAgent,
@@ -634,6 +651,136 @@ In sessions with ${acpToolNames.killShell} always use it instead of KillShell.`,
         }
       },
     );
+
+    // Grep tool - uses ripgrep (rg) via terminal
+    // TODO: Consider using the SDK's bundled ripgrep binary at:
+    //   node_modules/@anthropic-ai/claude-agent-sdk/vendor/ripgrep/{arch}-{platform}/rg
+    //   Path can be constructed as: path.join(require.resolve('@anthropic-ai/claude-agent-sdk'), '../vendor/ripgrep', `${process.arch}-${process.platform}`, process.platform === 'win32' ? 'rg.exe' : 'rg')
+    // TODO: Alternatively, could use @vscode/ripgrep package which bundles ripgrep binaries for all platforms
+    server.registerTool(
+      unqualifiedToolNames.grep,
+      {
+        title: unqualifiedToolNames.grep,
+        description: `A powerful search tool built on ripgrep
+
+Usage:
+- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command. The Grep tool has been optimized for correct permissions and access.
+- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+- Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")
+- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+- Use Task tool for open-ended searches requiring multiple rounds
+- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface\\{\\} to find interface{} in Go code)
+- Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct \\{[\\s\\S]*?field, use multiline: true
+
+In sessions with ${acpToolNames.grep} always use it instead of Grep.`,
+        inputSchema: {
+          pattern: z.string().describe("The regular expression pattern to search for in file contents"),
+          path: z.string().optional().describe("File or directory to search in (rg PATH). Defaults to current working directory."),
+          glob: z.string().optional().describe("Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\") - maps to rg --glob"),
+          type: z.string().optional().describe("File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types."),
+          output_mode: z.enum(["content", "files_with_matches", "count"]).optional().describe("Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts. Defaults to \"files_with_matches\"."),
+          "-i": z.boolean().optional().describe("Case insensitive search (rg -i)"),
+          "-n": z.boolean().optional().describe("Show line numbers in output (rg -n). Requires output_mode: \"content\", ignored otherwise. Defaults to true."),
+          "-A": z.number().optional().describe("Number of lines to show after each match (rg -A). Requires output_mode: \"content\", ignored otherwise."),
+          "-B": z.number().optional().describe("Number of lines to show before each match (rg -B). Requires output_mode: \"content\", ignored otherwise."),
+          "-C": z.number().optional().describe("Number of lines to show before and after each match (rg -C). Requires output_mode: \"content\", ignored otherwise."),
+          multiline: z.boolean().optional().describe("Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false."),
+          head_limit: z.number().optional().describe("Limit output to first N lines/entries, equivalent to \"| head -N\". Works across all output modes. Defaults to 0 (unlimited)."),
+          offset: z.number().optional().describe("Skip first N lines/entries before applying head_limit. Works across all output modes. Defaults to 0."),
+        },
+        annotations: {
+          title: "Search with ripgrep",
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+          idempotentHint: true,
+        },
+      },
+      async (input: GrepInput, extra) => {
+        const session = agent.sessions[sessionId];
+        if (!session) {
+          return {
+            content: [{ type: "text", text: "The user has left the building" }],
+          };
+        }
+
+        if (!agent.clientCapabilities?.terminal || !agent.client.createTerminal) {
+          throw new Error("Terminal capability not available");
+        }
+
+        // Build ripgrep command
+        const command = buildRipgrepCommand(input);
+
+        // Note: Permission is handled by ACP's terminal creation flow.
+        // The ACP client will prompt the user before executing the command.
+
+        try {
+          const handle = await agent.client.createTerminal({
+            command,
+            env: [{ name: "CLAUDECODE", value: "1" }],
+            sessionId,
+            outputByteLimit: 32_000,
+          });
+
+          await using terminal = handle;
+
+          const exitPromise = handle.waitForExit();
+          const abortPromise = new Promise<null>((resolve) => {
+            if (extra.signal.aborted) {
+              resolve(null);
+            } else {
+              extra.signal.addEventListener("abort", () => resolve(null));
+            }
+          });
+
+          const result = await Promise.race([
+            exitPromise.then((exitStatus) => ({ status: "exited" as const, exitStatus })),
+            abortPromise.then(() => ({ status: "aborted" as const, exitStatus: null })),
+            sleep(30_000).then(() => ({ status: "timedOut" as const, exitStatus: null })),
+          ]);
+
+          if (result.status === "aborted") {
+            return {
+              content: [{ type: "text", text: "Search cancelled by user" }],
+            };
+          }
+
+          const output = await terminal.currentOutput();
+
+          // Check if rg is not installed (command not found)
+          if (output.exitStatus?.exitCode === 127 || output.output.includes("command not found")) {
+            return {
+              content: [{ type: "text", text: `Error: The 'rg' (ripgrep) command is not available.
+
+To install ripgrep:
+  - macOS: brew install ripgrep
+  - Ubuntu/Debian: apt install ripgrep
+  - Windows: choco install ripgrep
+  - Or visit: https://github.com/BurntSushi/ripgrep#installation` }],
+            };
+          }
+
+          // Format output similar to Claude's native Grep tool
+          let resultText = output.output;
+
+          if (output.truncated) {
+            resultText += `\n\n(Output truncated to ${output.output.length} bytes)`;
+          }
+
+          if (result.status === "timedOut") {
+            resultText = `Search timed out after 30 seconds.\n\n${resultText}`;
+          }
+
+          return {
+            content: [{ type: "text", text: resultText }],
+          };
+        } catch (error: any) {
+          return {
+            content: [{ type: "text", text: `Search failed: ${error.message}` }],
+          };
+        }
+      },
+    );
   }
 
   return server;
@@ -803,4 +950,95 @@ export function replaceAndCalculateLocation(
   const uniqueLineNumbers = [...new Set(lineNumbers)].sort();
 
   return { newContent: finalContent, lineNumbers: uniqueLineNumbers };
+}
+
+/**
+ * Build a ripgrep command string from GrepInput parameters.
+ * Translates the Claude Grep tool input schema to rg command-line arguments.
+ */
+function buildRipgrepCommand(input: GrepInput): string {
+  const args: string[] = ["rg"];
+
+  // Output mode
+  const outputMode = input.output_mode ?? "files_with_matches";
+  switch (outputMode) {
+    case "files_with_matches":
+      args.push("-l"); // --files-with-matches
+      break;
+    case "count":
+      args.push("-c"); // --count
+      break;
+    case "content":
+      // Default behavior, show matching lines
+      // Add line numbers by default for content mode (unless explicitly disabled)
+      if (input["-n"] !== false) {
+        args.push("-n");
+      }
+      break;
+  }
+
+  // Case insensitive
+  if (input["-i"]) {
+    args.push("-i");
+  }
+
+  // Context lines (only for content mode)
+  if (outputMode === "content") {
+    if (input["-A"] !== undefined) {
+      args.push("-A", String(input["-A"]));
+    }
+    if (input["-B"] !== undefined) {
+      args.push("-B", String(input["-B"]));
+    }
+    if (input["-C"] !== undefined) {
+      args.push("-C", String(input["-C"]));
+    }
+  }
+
+  // Multiline mode
+  if (input.multiline) {
+    args.push("-U", "--multiline-dotall");
+  }
+
+  // File type filter
+  if (input.type) {
+    args.push("--type", input.type);
+  }
+
+  // Glob filter
+  if (input.glob) {
+    args.push("--glob", input.glob);
+  }
+
+  // The pattern (escape for shell)
+  args.push("--", escapeShellArg(input.pattern));
+
+  // Search path - MUST always be provided to avoid ripgrep reading from stdin.
+  // When stdin is not a TTY (as in our terminal execution), ripgrep waits for
+  // stdin input instead of searching the current directory, causing a hang.
+  args.push(escapeShellArg(input.path ?? "."));
+
+  // Handle head_limit and offset via piping to head/tail
+  let command = args.join(" ");
+
+  if (input.offset && input.offset > 0) {
+    // Skip first N lines
+    command += ` | tail -n +${input.offset + 1}`;
+  }
+
+  if (input.head_limit && input.head_limit > 0) {
+    // Limit to first N lines
+    command += ` | head -n ${input.head_limit}`;
+  }
+
+  return command;
+}
+
+/**
+ * Escape a string for use as a shell argument.
+ * Uses single quotes and escapes any single quotes within the string.
+ */
+function escapeShellArg(arg: string): string {
+  // Wrap in single quotes and escape any single quotes within
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }

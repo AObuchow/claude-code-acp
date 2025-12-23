@@ -2,13 +2,14 @@ import { PlanEntry, ToolCallContent, ToolCallLocation, ToolKind } from "@agentcl
 import { replaceAndCalculateLocation, SYSTEM_REMINDER } from "./mcp-server.js";
 import { ToolResultBlockParam, WebSearchToolResultBlockParam } from "@anthropic-ai/sdk/resources";
 
-const acpUnqualifiedToolNames = {
+export const acpUnqualifiedToolNames = {
   read: "Read",
   edit: "Edit",
   write: "Write",
   bash: "Bash",
   killShell: "KillShell",
   bashOutput: "BashOutput",
+  grep: "Grep",
 };
 
 export const ACP_TOOL_NAME_PREFIX = "mcp__acp__";
@@ -19,6 +20,7 @@ export const acpToolNames = {
   bash: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.bash,
   killShell: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.killShell,
   bashOutput: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.bashOutput,
+  grep: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.grep,
 };
 
 export const EDIT_TOOL_NAMES = [acpToolNames.edit, acpToolNames.write];
@@ -282,7 +284,8 @@ export function toolInfoFromToolUse(
       };
     }
 
-    case "Grep": {
+    case "Grep":
+    case acpToolNames.grep: {
       let label = "grep";
 
       if (input["-i"]) {
@@ -304,13 +307,13 @@ export function toolInfoFromToolUse(
 
       if (input.output_mode) {
         switch (input.output_mode) {
-          case "FilesWithMatches":
+          case "files_with_matches":
             label += " -l";
             break;
-          case "Count":
+          case "count":
             label += " -c";
             break;
-          case "Content":
+          case "content":
           default:
             break;
         }
@@ -342,6 +345,7 @@ export function toolInfoFromToolUse(
         title: label,
         kind: "search",
         content: [],
+        locations: input.path ? [{ path: input.path }] : [],
       };
     }
 
