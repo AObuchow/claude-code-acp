@@ -36,6 +36,7 @@ const unqualifiedToolNames = {
   killShell: "KillShell",
   bashOutput: "BashOutput",
   grep: "Grep",
+  glob: "Glob",
 };
 
 interface GrepInput {
@@ -52,6 +53,11 @@ interface GrepInput {
   multiline?: boolean;
   head_limit?: number;
   offset?: number;
+}
+
+interface GlobInput {
+  pattern: string;
+  path?: string;
 }
 
 export function createMcpServer(
@@ -781,6 +787,116 @@ To install ripgrep:
         }
       },
     );
+
+    // Glob tool - uses fd via terminal
+    // TODO: Consider bundling fd binary similar to how SDK bundles ripgrep
+    //   Could distribute platform-specific binaries or use a package like @aspect-build/fd
+    server.registerTool(
+      unqualifiedToolNames.glob,
+      {
+        title: unqualifiedToolNames.glob,
+        description: `- Fast file pattern matching tool that works with any codebase size
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Returns matching file paths sorted by modification time
+- Use this tool when you need to find files by name patterns
+- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
+- You can call multiple tools in a single response. It is always better to speculatively perform multiple searches in parallel if they are potentially useful.
+
+In sessions with ${acpToolNames.glob} always use it instead of Glob.`,
+        inputSchema: {
+          pattern: z.string().describe("The glob pattern to match files against"),
+          path: z.string().optional().describe("The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided."),
+        },
+        annotations: {
+          title: "Find files by pattern",
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+          idempotentHint: true,
+        },
+      },
+      async (input: GlobInput, extra) => {
+        const session = agent.sessions[sessionId];
+        if (!session) {
+          return {
+            content: [{ type: "text", text: "The user has left the building" }],
+          };
+        }
+
+        if (!agent.clientCapabilities?.terminal || !agent.client.createTerminal) {
+          throw new Error("Terminal capability not available");
+        }
+
+        // Build fd command
+        const command = buildFdCommand(input);
+
+        try {
+          const handle = await agent.client.createTerminal({
+            command,
+            env: [{ name: "CLAUDECODE", value: "1" }],
+            sessionId,
+            outputByteLimit: 32_000,
+          });
+
+          await using terminal = handle;
+
+          const exitPromise = handle.waitForExit();
+          const abortPromise = new Promise<null>((resolve) => {
+            if (extra.signal.aborted) {
+              resolve(null);
+            } else {
+              extra.signal.addEventListener("abort", () => resolve(null));
+            }
+          });
+
+          const result = await Promise.race([
+            exitPromise.then((exitStatus) => ({ status: "exited" as const, exitStatus })),
+            abortPromise.then(() => ({ status: "aborted" as const, exitStatus: null })),
+            sleep(30_000).then(() => ({ status: "timedOut" as const, exitStatus: null })),
+          ]);
+
+          if (result.status === "aborted") {
+            return {
+              content: [{ type: "text", text: "Search cancelled by user" }],
+            };
+          }
+
+          const output = await terminal.currentOutput();
+
+          // Check if fd is not installed (command not found)
+          if (output.exitStatus?.exitCode === 127 || output.output.includes("command not found")) {
+            return {
+              content: [{ type: "text", text: `Error: The 'fd' command is not available.
+
+To install fd:
+  - macOS: brew install fd
+  - Ubuntu/Debian: apt install fd-find
+  - Windows: choco install fd
+  - Or visit: https://github.com/sharkdp/fd#installation` }],
+            };
+          }
+
+          // Format output similar to Claude's native Glob tool
+          let resultText = output.output;
+
+          if (output.truncated) {
+            resultText += `\n\n(Output truncated to ${output.output.length} bytes)`;
+          }
+
+          if (result.status === "timedOut") {
+            resultText = `Search timed out after 30 seconds.\n\n${resultText}`;
+          }
+
+          return {
+            content: [{ type: "text", text: resultText }],
+          };
+        } catch (error: any) {
+          return {
+            content: [{ type: "text", text: `Search failed: ${error.message}` }],
+          };
+        }
+      },
+    );
   }
 
   return server;
@@ -1041,4 +1157,33 @@ function buildRipgrepCommand(input: GrepInput): string {
 function escapeShellArg(arg: string): string {
   // Wrap in single quotes and escape any single quotes within
   return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build an fd command string from GlobInput parameters.
+ * Translates the Claude Glob tool input schema to fd command-line arguments.
+ *
+ * Translation logic per plan:
+ * - **\/*.ts → fd -e ts (simple extension pattern)
+ * - src/**\/*.{js,tsx} → fd -g 'src/**\/*.{js,tsx}' (pattern with path)
+ * - Patterns with / → use -g 'pattern'
+ */
+function buildFdCommand(input: GlobInput): string {
+  const args: string[] = ["fd"];
+
+  // Only match files, not directories
+  args.push("-t", "f");
+
+  // Use glob pattern matching
+  args.push("-g", escapeShellArg(input.pattern));
+
+  // Search path - default to "." if not specified
+  args.push(escapeShellArg(input.path ?? "."));
+
+  // Pipe to ls -t for modification time sorting (Claude's native Glob returns sorted by mtime)
+  // Use -X to execute ls with all results at once
+  // Note: This works cross-platform and handles the mtime sorting requirement
+  let command = args.join(" ") + " -X ls -t";
+
+  return command;
 }

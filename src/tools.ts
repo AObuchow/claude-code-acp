@@ -10,6 +10,7 @@ export const acpUnqualifiedToolNames = {
   killShell: "KillShell",
   bashOutput: "BashOutput",
   grep: "Grep",
+  glob: "Glob",
 };
 
 export const ACP_TOOL_NAME_PREFIX = "mcp__acp__";
@@ -21,6 +22,7 @@ export const acpToolNames = {
   killShell: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.killShell,
   bashOutput: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.bashOutput,
   grep: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.grep,
+  glob: ACP_TOOL_NAME_PREFIX + acpUnqualifiedToolNames.glob,
 };
 
 export const EDIT_TOOL_NAMES = [acpToolNames.edit, acpToolNames.write];
@@ -268,7 +270,8 @@ export function toolInfoFromToolUse(
         locations: input?.file_path ? [{ path: input.file_path }] : [],
       };
 
-    case "Glob": {
+    case "Glob":
+    case acpToolNames.glob: {
       let label = "Find";
       if (input.path) {
         label += ` \`${input.path}\``;

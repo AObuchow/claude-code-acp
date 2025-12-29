@@ -87,6 +87,7 @@ const TOOL_ARG_ACCESSORS: Record<string, (input: unknown) => string | undefined>
   mcp__acp__Write: (input) => (input as { file_path?: string })?.file_path,
   mcp__acp__Bash: (input) => (input as { command?: string })?.command,
   mcp__acp__Grep: (input) => (input as { path?: string })?.path,
+  mcp__acp__Glob: (input) => (input as { path?: string })?.path,
 };
 
 /**
