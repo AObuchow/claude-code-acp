@@ -553,6 +553,24 @@ export class ClaudeAcpAgent implements Agent {
         };
       }
 
+      // For Edit operations, always read fresh file content for accurate permission preview
+      // This ensures the diff shown matches what will actually be edited, even if the cache
+      // has stale or truncated content from a prior Read with limits
+      if (toolName === acpToolNames.edit || toolName === "Edit") {
+        const filePath = toolInput?.file_path;
+        if (typeof filePath === "string") {
+          try {
+            const response = await this.client.readTextFile({
+              path: filePath,
+              sessionId,
+            });
+            this.fileContentCache[filePath] = response.content;
+          } catch (e) {
+            this.logger.error("Failed to read file for Edit permission preview:", e);
+          }
+        }
+      }
+
       const toolInfo = toolInfoFromToolUse(
         { name: toolName, input: toolInput },
         this.fileContentCache,
