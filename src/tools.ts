@@ -228,11 +228,13 @@ export function toolInfoFromToolUse(
     case acpToolNames.write: {
       let content: ToolCallContent[] = [];
       if (input && input.file_path) {
+        // Show old content if file exists in cache, null for new files
+        const oldContent = cachedFileContent[input.file_path] ?? null;
         content = [
           {
             type: "diff",
             path: input.file_path,
-            oldText: null,
+            oldText: oldContent,
             newText: input.content,
           },
         ];
@@ -252,7 +254,12 @@ export function toolInfoFromToolUse(
       };
     }
 
-    case "Write":
+    case "Write": {
+      // Show old content if file exists in cache, null for new files
+      const oldContent =
+        input && input.file_path
+          ? (cachedFileContent[input.file_path] ?? null)
+          : null;
       return {
         title: input?.file_path ? `Write ${input.file_path}` : "Write",
         kind: "edit",
@@ -262,13 +269,14 @@ export function toolInfoFromToolUse(
                 {
                   type: "diff",
                   path: input.file_path,
-                  oldText: null,
+                  oldText: oldContent,
                   newText: input.content,
                 },
               ]
             : [],
         locations: input?.file_path ? [{ path: input.file_path }] : [],
       };
+    }
 
     case "Glob":
     case acpToolNames.glob: {

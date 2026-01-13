@@ -553,10 +553,16 @@ export class ClaudeAcpAgent implements Agent {
         };
       }
 
-      // For Edit operations, always read fresh file content for accurate permission preview
+      // For Edit and Write operations, always read fresh file content for accurate permission preview
       // This ensures the diff shown matches what will actually be edited, even if the cache
       // has stale or truncated content from a prior Read with limits
-      if (toolName === acpToolNames.edit || toolName === "Edit") {
+      // For Write, this shows users what content they're about to overwrite (if file exists)
+      if (
+        toolName === acpToolNames.edit ||
+        toolName === "Edit" ||
+        toolName === acpToolNames.write ||
+        toolName === "Write"
+      ) {
         const filePath = toolInput?.file_path;
         if (typeof filePath === "string") {
           try {
@@ -566,7 +572,7 @@ export class ClaudeAcpAgent implements Agent {
             });
             this.fileContentCache[filePath] = response.content;
           } catch (e) {
-            this.logger.error("Failed to read file for Edit permission preview:", e);
+            this.logger.error("Failed to read file for Edit or Write permission preview:", e);
           }
         }
       }
